@@ -4,7 +4,8 @@ const state = {
     score: 0,
     combo: 0,
     bestCombo: 0,
-    progress: 0, // 0..100
+    bestPctByMode: { easy: 0, normal: 0, hard: 0 },
+    progress: 0, // 0..progressGoal (can exceed for animation ease)
     timer: 60,
     spawnInterval: 900,
     hazardChance: 0.25,
@@ -16,25 +17,67 @@ const state = {
     difficulty: 'normal'
 };
 
-// Difficulty settings
+// ---- Difficulty settings (meaningful rule changes) ----
 const DIFFICULTY_SETTINGS = {
-    easy: { timer: 90, spawnInterval: 1000, hazardChance: 0.15, progressPerCan: 6, progressGoal: 100, speedMultiplier: 0.8 },
-    normal: { timer: 60, spawnInterval: 900, hazardChance: 0.25, progressPerCan: 5, progressGoal: 100, speedMultiplier: 1.0 },
-    hard: { timer: 45, spawnInterval: 700, hazardChance: 0.35, progressPerCan: 4, progressGoal: 100, speedMultiplier: 1.3 }
+    easy: {
+        label: 'Easy',
+        timer: 90,
+        spawnInterval: 1000,
+        hazardChance: 0.15,
+        progressPerCan: 6,
+        progressGoal: 90,          // win earlier on Easy
+        speedMultiplier: 0.85,
+        missPenalty: 0,            // no progress loss on miss
+        hitProgressPenalty: 0,     // hazards don’t reduce progress, just score
+        hazardScorePenalty: 1,
+        comboBonusEvery: 4,
+        comboBonusProgress: 2
+    },
+    normal: {
+        label: 'Normal',
+        timer: 60,
+        spawnInterval: 900,
+        hazardChance: 0.25,
+        progressPerCan: 5,
+        progressGoal: 100,         // standard goal
+        speedMultiplier: 1.0,
+        missPenalty: 1,            // 1% progress loss on miss
+        hitProgressPenalty: 1,     // hazards reduce progress 1%
+        hazardScorePenalty: 1,
+        comboBonusEvery: 5,
+        comboBonusProgress: 2
+    },
+    hard: {
+        label: 'Hard',
+        timer: 45,
+        spawnInterval: 680,
+        hazardChance: 0.55,        // Much more obstacles (55% hazards!)
+        progressPerCan: 4,
+        progressGoal: 120,         // higher win goal for Hard
+        speedMultiplier: 1.3,
+        missPenalty: 2,            // steeper punishments
+        hitProgressPenalty: 2,
+        hazardScorePenalty: 2,
+        comboBonusEvery: 6,
+        comboBonusProgress: 3
+    }
 };
 
-// ---- DOM helpers/refs ----
+// ---- DOM refs ----
 const $ = sel => document.querySelector(sel);
 const gameArea = $('#game-area');
 const overlay = $('#overlay');
 const milestone = $('#milestone');
 const confettiLayer = $('#confetti-layer');
+const badgesEl = $('#badges');
 const scoreEl = $('#score');
 const comboEl = $('#combo');
 const bestComboEl = $('#bestCombo');
+const bestPctEl = $('#bestPct');
 const timerEl = $('#timer');
 const progressBar = $('#progressBar');
 const progressPct = $('#progressPct');
+const diffRules = $('#diffRules');
 const startBtn = $('#startBtn');
 const bigStart = $('#bigStart');
 const pauseBtn = $('#pauseBtn');
@@ -74,33 +117,42 @@ window.addEventListener('pointerup', () => dragging = false);
 gameArea.addEventListener('pointermove', (e) => { if (dragging) moveToPointer(e); });
 
 window.addEventListener('keydown', (e) => {
-    if (e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { keys.left = true; e.preventDefault(); }
-    if (e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D') { keys.right = true; e.preventDefault(); }
+    const isLeft = e.code === 'ArrowLeft' || e.key.toLowerCase() === 'a';
+    const isRight = e.code === 'ArrowRight' || e.key.toLowerCase() === 'd';
+    const isSpace = e.code === 'Space';
+
+    if (isLeft) { keys.left = true; e.preventDefault(); }
+    if (isRight) { keys.right = true; e.preventDefault(); }
+    if (isSpace) { e.preventDefault(); if (!pauseBtn.disabled) pauseBtn.click(); }
 });
 window.addEventListener('keyup', (e) => {
-    if (e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
-    if (e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+    const isLeft = e.code === 'ArrowLeft' || e.key.toLowerCase() === 'a';
+    const isRight = e.code === 'ArrowRight' || e.key.toLowerCase() === 'd';
+
+    if (isLeft) keys.left = false;
+    if (isRight) keys.right = false;
 });
 window.addEventListener('resize', layoutPlayer);
 
 // ---- Persistence ----
-try { state.bestCombo = parseInt(localStorage.getItem('sfw_best_combo') || '0', 10) || 0; } catch { }
-bestComboEl.textContent = state.bestCombo;
-
-// ---- Audio (WebAudio + SFX files) ----
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-function beep(freq = 600, duration = 0.08, type = 'square') {
-    if (state.muted) return;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    o.type = type; o.frequency.value = freq;
-    g.gain.value = 0.06;
-    o.connect(g); g.connect(audioCtx.destination);
-    o.start();
-    setTimeout(() => { o.stop(); }, duration * 1000);
+function saveToLocal(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch { }
 }
 
-// Real SFX with graceful fallback to beep()
+function loadFromLocal(key, fallback = '0') {
+    try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+
+state.bestCombo = parseInt(loadFromLocal('sfw_best_combo'), 10) || 0;
+['easy', 'normal', 'hard'].forEach(d => {
+    state.bestPctByMode[d] = parseInt(loadFromLocal(`sfw_best_pct_${d}`), 10) || 0;
+});
+
+bestComboEl.textContent = state.bestCombo;
+
+// ---- Audio (SFX files) ----
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
 const sfx = (() => {
     const files = {
         catch: 'sfx/catch.mp3',
@@ -116,20 +168,12 @@ const sfx = (() => {
         a.volume = 0.5;
         bank[k] = a;
     }
+
     function play(name) {
         if (state.muted) return;
         const a = bank[name];
         if (a && a.readyState >= 2) {
             try { a.currentTime = 0; a.play(); } catch { }
-            return;
-        }
-        // Fallback tones
-        if (name === 'catch') beep(760, 0.06);
-        else if (name === 'hit' || name === 'fail') beep(280, 0.08, 'sawtooth');
-        else if (name === 'win') {
-            beep(880, .12, 'triangle');
-            setTimeout(() => beep(1046, .12, 'triangle'), 120);
-            setTimeout(() => beep(1318, .12, 'triangle'), 240);
         }
     }
     return { play };
@@ -158,11 +202,18 @@ function updateHUD() {
     progressBar.style.width = state.progress + '%';
     progressBar.setAttribute('aria-valuenow', String(Math.round(state.progress)));
     progressPct.textContent = Math.round(state.progress) + '%';
+    bestPctEl.textContent = `${state.bestPctByMode[state.difficulty]}%`;
 }
 function showMilestone(text) {
     milestone.textContent = text;
     milestone.style.display = 'inline-block';
     setTimeout(() => milestone.style.display = 'none', 2000);
+}
+function addBadge(text) {
+    const chip = document.createElement('span');
+    chip.className = 'badge rounded-pill text-bg-warning text-dark fw-semibold';
+    chip.textContent = text;
+    badgesEl.appendChild(chip);
 }
 
 // ---- Milestones ----
@@ -172,18 +223,32 @@ const FACTS = [
     'Safe water helps reduce waterborne illnesses.',
     'Communities thrive when clean water is close to home.'
 ];
+
+const MILESTONE_THRESHOLDS = [
+    { pct: 25, fact: FACTS[1], badge: '25%' },
+    { pct: 50, fact: FACTS[2], badge: '50%' },
+    { pct: 75, fact: FACTS[3], badge: '75%' }
+];
+
 function resetMilestones() {
-    checkMilestones.m25 = false;
-    checkMilestones.m50 = false;
-    checkMilestones.m75 = false;
+    MILESTONE_THRESHOLDS.forEach((_, i) => checkMilestones[`m${i}`] = false);
+    badgesEl.innerHTML = '';
 }
+
 function checkMilestones() {
     const p = state.progress;
     const settings = DIFFICULTY_SETTINGS[state.difficulty];
-    if (p >= settings.progressGoal) { celebrateWin(); return; }
-    if (p >= 75 && !checkMilestones.m75) { checkMilestones.m75 = true; showMilestone(FACTS[3]); }
-    else if (p >= 50 && !checkMilestones.m50) { checkMilestones.m50 = true; showMilestone(FACTS[2]); }
-    else if (p >= 25 && !checkMilestones.m25) { checkMilestones.m25 = true; showMilestone(FACTS[1]); }
+
+    if (p >= settings.progressGoal) { endGame(true); return; }
+
+    MILESTONE_THRESHOLDS.forEach((m, i) => {
+        const key = `m${i}`;
+        if (p >= m.pct && !checkMilestones[key]) {
+            checkMilestones[key] = true;
+            showMilestone(m.fact);
+            addBadge(m.badge);
+        }
+    });
 }
 
 // ---- Confetti ----
@@ -223,39 +288,61 @@ function confettiBurst() {
 }
 
 // ---- Win/Lose ----
-function celebrateWin() {
-    state.running = false;
-    stopLoops();
-    sfx.play('win');
-    confettiBurst();
-    const diffLabel = state.difficulty.charAt(0).toUpperCase() + state.difficulty.slice(1);
-    setOverlay(true, `
-    <h3 class="fw-bold">You filled a well! 🎉</h3>
-    <p class="text-muted">Great job on <strong>${diffLabel}</strong> mode! Final score: <strong>${state.score}</strong></p>
-    <div class="d-flex gap-2 justify-content-center">
-      <button class="btn btn-cw" id="playAgain">Play Again</button>
-      <a class="btn btn-outline-dark" href="https://www.charitywater.org/" target="_blank" rel="noopener">Learn more</a>
-    </div>
-  `);
-    $('#playAgain').onclick = () => { sfx.play('click'); resetGame(true); };
+function saveBestPercent() {
+    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const pct = Math.min(Math.round(state.progress), settings.progressGoal);
+    if (pct > state.bestPctByMode[state.difficulty]) {
+        state.bestPctByMode[state.difficulty] = pct;
+        saveToLocal(`sfw_best_pct_${state.difficulty}`, pct);
+    }
 }
-function gameOver() {
+
+function endGame(won) {
     state.running = false;
     stopLoops();
-    sfx.play('hit');
-    const diffLabel = state.difficulty.charAt(0).toUpperCase() + state.difficulty.slice(1);
-    setOverlay(true, `
-    <h3 class="fw-bold">Time's up!</h3>
-    <p class="text-muted">You made it to <strong>${Math.round(state.progress)}%</strong> with a score of <strong>${state.score}</strong> on <strong>${diffLabel}</strong> mode.</p>
-    <div class="d-flex gap-2 justify-content-center">
-      <button class="btn btn-cw" id="playAgain">Try Again</button>
-      <a class="btn btn-outline-dark" href="https://www.charitywater.org/" target="_blank" rel="noopener">Learn more</a>
-    </div>
-  `);
+    saveBestPercent();
+
+    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const diffLabel = settings.label;
+
+    if (won) {
+        sfx.play('win');
+        confettiBurst();
+        setOverlay(true, `
+        <h3 class="fw-bold">You filled a well! 🎉</h3>
+        <p class="text-muted">Great job on <strong>${diffLabel}</strong> mode! Final score: <strong>${state.score}</strong></p>
+        <div class="d-flex gap-2 justify-content-center">
+          <button class="btn btn-cw" id="playAgain">Play Again</button>
+          <a class="btn btn-outline-dark" href="https://www.charitywater.org/donate" target="_blank" rel="noopener">Donate</a>
+        </div>
+      `);
+    } else {
+        sfx.play('hit');
+        setOverlay(true, `
+        <h3 class="fw-bold">Time's up!</h3>
+        <p class="text-muted">You made it to <strong>${Math.round(state.progress)}%</strong> with a score of <strong>${state.score}</strong> on <strong>${diffLabel}</strong> mode.</p>
+        <div class="d-flex gap-2 justify-content-center">
+          <button class="btn btn-cw" id="playAgain">Try Again</button>
+          <a class="btn btn-outline-dark" href="https://www.charitywater.org/" target="_blank" rel="noopener">Learn more</a>
+        </div>
+      `);
+    }
+
     $('#playAgain').onclick = () => { sfx.play('click'); resetGame(true); };
+    updateHUD();
 }
 
 // ---- Spawning ----
+function handleItemInteraction(obj, labelX, labelY) {
+    if (!obj.isHazard) {
+        onCollect(labelX, labelY);
+        obj.el.classList.add('collected');
+        setTimeout(() => { obj.el.remove(); state.items.delete(obj); }, 300);
+    } else {
+        onHazard(labelX, labelY);
+    }
+}
+
 function spawnItem() {
     const settings = DIFFICULTY_SETTINGS[state.difficulty];
     const isHazard = Math.random() < settings.hazardChance;
@@ -277,30 +364,52 @@ function spawnItem() {
     el.addEventListener('click', (e) => {
         if (!state.running) return;
         const rect = gameArea.getBoundingClientRect();
-        if (!obj.isHazard) {
-            state.score += 1;
-            state.combo += 1;
-            state.bestCombo = Math.max(state.bestCombo, state.combo);
-            try { localStorage.setItem('sfw_best_combo', String(state.bestCombo)); } catch { }
-            state.progress = clamp(state.progress + settings.progressPerCan, 0, settings.progressGoal);
-            feedbackLabel(e.clientX, e.clientY, '+1');
-            sfx.play('catch');
-            el.classList.add('collected');
-            setTimeout(() => { el.remove(); state.items.delete(obj); }, 300);
-            updateHUD();
-            checkMilestones();
-        } else {
-            state.score = Math.max(0, state.score - 1);
-            state.combo = 0;
-            feedbackLabel(e.clientX, e.clientY, '–1', true);
-            gameArea.classList.remove('shake'); void gameArea.offsetWidth; gameArea.classList.add('shake');
-            sfx.play('hit');
-            updateHUD();
-        }
+        handleItemInteraction(obj, rect.left + obj.x + obj.w / 2, rect.top + player.y);
     });
 
     gameArea.appendChild(el);
     state.items.add(obj);
+}
+
+function onCollect(labelX, labelY) {
+    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    state.score += 1;
+    state.combo += 1;
+    state.bestCombo = Math.max(state.bestCombo, state.combo);
+    saveToLocal('sfw_best_combo', state.bestCombo);
+
+    // Base progress
+    state.progress = clamp(state.progress + settings.progressPerCan, 0, settings.progressGoal);
+
+    // Combo bonus every 5
+    if (state.combo > 0 && state.combo % 5 === 0) {
+        state.progress = clamp(state.progress + settings.comboBonusProgress, 0, settings.progressGoal);
+        feedbackLabel(labelX, labelY, `+${settings.comboBonusProgress}% Combo!`);
+    } else {
+        feedbackLabel(labelX, labelY, '+1');
+    }
+
+    sfx.play('catch');
+    updateHUD();
+    checkMilestones();
+}
+
+function onHazard(labelX, labelY) {
+    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+
+    state.score = Math.max(0, state.score - settings.hazardScorePenalty);
+    state.combo = 0;
+
+    if (settings.hitProgressPenalty > 0) {
+        state.progress = clamp(state.progress - settings.hitProgressPenalty, 0, settings.progressGoal);
+        feedbackLabel(labelX, labelY, `–${settings.hazardScorePenalty} & –${settings.hitProgressPenalty}%`, true);
+    } else {
+        feedbackLabel(labelX, labelY, `–${settings.hazardScorePenalty}`, true);
+    }
+
+    gameArea.classList.remove('shake'); void gameArea.offsetWidth; gameArea.classList.add('shake');
+    sfx.play('hit');
+    updateHUD();
 }
 
 function feedbackLabel(clientX, clientY, text, negative = false) {
@@ -336,29 +445,8 @@ function frame(now) {
         // Collision
         if (intersects(obj)) {
             const rect = gameArea.getBoundingClientRect();
-            if (!obj.isHazard) {
-                state.score += 1;
-                state.combo += 1;
-                state.bestCombo = Math.max(state.bestCombo, state.combo);
-                try { localStorage.setItem('sfw_best_combo', String(state.bestCombo)); } catch { }
-                state.progress = clamp(state.progress + settings.progressPerCan, 0, settings.progressGoal);
-                feedbackLabel(rect.left + obj.x + obj.w / 2, rect.top + player.y, '+1');
-                sfx.play('catch');
-                obj.el.classList.add('collected');
-                setTimeout(() => { obj.el.remove(); }, 300);
-                state.items.delete(obj);
-                updateHUD();
-                checkMilestones();
-            } else {
-                state.score = Math.max(0, state.score - 1);
-                state.combo = 0;
-                feedbackLabel(rect.left + obj.x + obj.w / 2, rect.top + player.y, '–1', true);
-                gameArea.classList.remove('shake'); void gameArea.offsetWidth; gameArea.classList.add('shake');
-                sfx.play('hit');
-                obj.el.remove();
-                state.items.delete(obj);
-                updateHUD();
-            }
+            handleItemInteraction(obj, rect.left + obj.x + obj.w / 2, rect.top + player.y);
+            state.items.delete(obj);
             continue;
         }
 
@@ -368,10 +456,11 @@ function frame(now) {
                 state.combo = 0;
                 const rect = gameArea.getBoundingClientRect();
                 feedbackLabel(rect.left + obj.x + obj.w / 2, rect.bottom - 24, 'miss', true);
+                if (settings.missPenalty > 0) {
+                    state.progress = clamp(state.progress - settings.missPenalty, 0, settings.progressGoal);
+                }
                 sfx.play('fail');
                 updateHUD();
-                // Optional: penalize score on miss
-                // state.score = Math.max(0, state.score - 1);
             }
             obj.el.remove();
             state.items.delete(obj);
@@ -383,8 +472,7 @@ function frame(now) {
 
 // Consistent spawn wrapper (so pause/resume stays clean)
 function spawnTick() {
-    if (!state.running) return;
-    spawnItem();
+    if (state.running) spawnItem();
 }
 
 // ---- Loops ----
@@ -404,24 +492,38 @@ function startLoops() {
         }
 
         updateHUD();
-        if (state.timer <= 0) gameOver();
+        if (state.timer <= 0) endGame(false);
     }, 1000);
 }
+
 function stopLoops() {
-    if (state.rafId) cancelAnimationFrame(state.rafId), state.rafId = null;
-    if (state.spawnId) clearInterval(state.spawnId), state.spawnId = null;
-    if (state.tickId) clearInterval(state.tickId), state.tickId = null;
+    [state.rafId, state.spawnId, state.tickId].forEach((id, i) => {
+        if (id) {
+            i === 0 ? cancelAnimationFrame(id) : clearInterval(id);
+            [state.rafId, state.spawnId, state.tickId][i] = null;
+        }
+    });
 }
 
 // ---- Game lifecycle ----
+function explainDifficulty() {
+    const s = DIFFICULTY_SETTINGS[state.difficulty];
+    diffRules.innerHTML =
+        `<span class="text-muted">
+      Goal: <strong>${s.progressGoal}%</strong> • Time: <strong>${s.timer}s</strong> • Progress/Can: <strong>${s.progressPerCan}%</strong> •
+      Miss: <strong>-${s.missPenalty}%</strong> • Hazard: <strong>-${s.hazardScorePenalty} pt${s.hazardScorePenalty > 1 ? 's' : ''}${s.hitProgressPenalty > 0 ? ` & -${s.hitProgressPenalty}%` : ''}</strong> •
+      Combo bonus every <strong>5</strong> cans: <strong>+${s.comboBonusProgress}%</strong>
+     </span>`;
+}
+
 function resetGame(autoStart = false) {
     stopLoops();
-    for (const obj of [...state.items]) { obj.el.remove(); }
+    state.items.forEach(obj => obj.el.remove());
     state.items.clear();
 
     // Read selected difficulty
     const selectedDiff = document.querySelector('input[name="difficulty"]:checked');
-    state.difficulty = selectedDiff ? selectedDiff.value : 'normal';
+    state.difficulty = selectedDiff?.value || 'normal';
     const settings = DIFFICULTY_SETTINGS[state.difficulty];
 
     Object.assign(state, {
@@ -437,29 +539,32 @@ function resetGame(autoStart = false) {
     layoutPlayer();
     updateHUD();
     resetMilestones();
-    pauseBtn.textContent = 'Pause';
-    pauseBtn.disabled = true;
-    resetBtn.disabled = true;
-    startBtn.disabled = false;
+    explainDifficulty();
 
-    const diffLabel = state.difficulty.charAt(0).toUpperCase() + state.difficulty.slice(1);
+    Object.assign(pauseBtn, { textContent: 'Pause', disabled: true });
+    Object.assign(resetBtn, { disabled: true });
+    Object.assign(startBtn, { disabled: false });
+
+    const diffLabel = settings.label;
     setOverlay(!autoStart, `
     <h3 class="fw-bold">Ready to help fill the well?</h3>
-    <p class="text-muted mb-2">Difficulty: <strong>${diffLabel}</strong> — ${settings.timer}s, ${settings.progressPerCan}% per can</p>
+    <p class="text-muted mb-2">Difficulty: <strong>${diffLabel}</strong> — Goal <strong>${settings.progressGoal}%</strong>, ${settings.timer}s, ${settings.progressPerCan}% per can</p>
     <p class="text-muted mb-3">Catch cans, avoid hazards, and hit milestones to learn impact facts.</p>
     <button class="btn btn-cw" id="playAgain">Start Game</button>
   `);
-    const btn = $('#playAgain');
-    if (btn) btn.onclick = () => { sfx.play('click'); startGame(); };
+    $('#playAgain')?.addEventListener('click', () => { sfx.play('click'); startGame(); });
     if (autoStart) startGame();
+
+    bestPctEl.textContent = `${state.bestPctByMode[state.difficulty]}%`;
 }
+
 function startGame() {
     if (state.running) return;
     state.running = true;
     setOverlay(false);
-    startBtn.disabled = true;
-    pauseBtn.disabled = false;
-    resetBtn.disabled = false;
+    Object.assign(startBtn, { disabled: true });
+    Object.assign(pauseBtn, { disabled: false });
+    Object.assign(resetBtn, { disabled: false });
     layoutPlayer();
     startLoops();
 }
@@ -469,32 +574,25 @@ startBtn.onclick = () => { sfx.play('click'); startGame(); };
 bigStart.onclick = () => { sfx.play('click'); startGame(); };
 pauseBtn.onclick = () => {
     sfx.play('click');
-    if (!state.running && state.timer > 0) {
-        state.running = true;
-        pauseBtn.textContent = 'Pause';
-        startLoops();
-    } else {
-        state.running = false;
-        pauseBtn.textContent = 'Resume';
-        stopLoops();
-    }
+    const shouldResume = !state.running && state.timer > 0;
+    state.running = shouldResume;
+    pauseBtn.textContent = shouldResume ? 'Pause' : 'Resume';
+    shouldResume ? startLoops() : stopLoops();
 };
 resetBtn.onclick = () => { sfx.play('click'); resetGame(false); };
 muteBtn.onclick = () => {
     sfx.play('click');
     state.muted = !state.muted;
-    muteBtn.classList.toggle('btn-outline-secondary', !state.muted);
-    muteBtn.classList.toggle('btn-outline-dark', state.muted);
-    muteBtn.textContent = state.muted ? 'Unmute' : 'Mute';
-    muteBtn.setAttribute('aria-pressed', state.muted ? 'true' : 'false');
-    try { localStorage.setItem('sfw_muted', state.muted ? '1' : '0'); } catch { }
+    const isMuted = state.muted;
+    muteBtn.classList.toggle('btn-outline-secondary', !isMuted);
+    muteBtn.classList.toggle('btn-outline-dark', isMuted);
+    Object.assign(muteBtn, {
+        textContent: isMuted ? 'Unmute' : 'Mute',
+        ariaPressed: String(isMuted)
+    });
+    saveToLocal('sfw_muted', isMuted ? '1' : '0');
     if (audioCtx.state === 'suspended') audioCtx.resume();
 };
-
-// Space toggles pause/resume
-window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') { e.preventDefault(); if (!pauseBtn.disabled) pauseBtn.click(); }
-});
 
 // Difficulty change listener - reset game when difficulty changes (only between games)
 difficultyRadios.forEach(radio => {
@@ -509,15 +607,13 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // Restore mute preference
-try {
-    state.muted = localStorage.getItem('sfw_muted') === '1';
-    if (state.muted) {
-        muteBtn.classList.remove('btn-outline-secondary');
-        muteBtn.classList.add('btn-outline-dark');
-        muteBtn.textContent = 'Unmute';
-        muteBtn.setAttribute('aria-pressed', 'true');
-    }
-} catch { }
+if (loadFromLocal('sfw_muted') === '1') {
+    state.muted = true;
+    muteBtn.classList.replace('btn-outline-secondary', 'btn-outline-dark');
+    Object.assign(muteBtn, { textContent: 'Unmute', ariaPressed: 'true' });
+}
 
+// Init
 layoutPlayer();
+explainDifficulty();
 updateHUD();

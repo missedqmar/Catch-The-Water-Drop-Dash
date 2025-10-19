@@ -118,10 +118,7 @@ body {
     aspect-ratio: 1 / 1;
     border-radius: 50%;
     background: #2b2b2b;
-    /* slightly softer dark */
-    box-shadow:
-        inset 0 0 10px rgba(255, 255, 255, .08),
-        0 4px 12px rgba(0, 0, 0, .25);
+    box-shadow: inset 0 0 10px rgba(255, 255, 255, .08), 0 4px 12px rgba(0, 0, 0, .25);
     outline: 2px solid rgba(255, 255, 255, .06);
     cursor: pointer;
     user-select: none;
@@ -149,11 +146,11 @@ body {
     box-shadow: 0 3px 10px rgba(0, 0, 0, .3);
 }
 
-/* Front wheel */
-.player .wheel-front {
+/* Wheels */
+.player .wheel-front,
+.player .wheel-back {
     position: absolute;
     bottom: 0;
-    right: 12px;
     width: 14px;
     height: 14px;
     border-radius: 50%;
@@ -162,17 +159,12 @@ body {
     box-shadow: inset 0 0 4px rgba(255, 255, 255, .2);
 }
 
-/* Back wheel */
+.player .wheel-front {
+    right: 12px;
+}
+
 .player .wheel-back {
-    position: absolute;
-    bottom: 0;
     left: 12px;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: #1a1a1a;
-    border: 2px solid #444;
-    box-shadow: inset 0 0 4px rgba(255, 255, 255, .2);
 }
 
 .float-label {
@@ -262,10 +254,17 @@ body {
     overflow: hidden;
 }
 
+.badges .badge {
+    background: #ffe07a !important;
+    color: #1f1f1f !important;
+    border: 1px solid rgba(0, 0, 0, .06);
+}
+
 @media (prefers-reduced-motion: reduce) {
 
     .float-label,
-    .shake {
+    .shake,
+    .can.collected {
         animation: none !important;
     }
 }
