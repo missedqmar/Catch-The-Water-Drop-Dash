@@ -234,7 +234,6 @@ function updateHUD() {
     comboEl.textContent = 'x' + state.combo;
     timerEl.textContent = state.timer;
     progressBar.style.width = state.progress + '%';
-    progressBar.setAttribute('aria-valuenow', String(Math.round(state.progress)));
     progressPct.textContent = Math.round(state.progress) + '%';
     bestPctEl.textContent = `${state.bestPctByMode[state.difficulty]}%`;
 }
@@ -566,7 +565,6 @@ muteBtn.onclick = () => {
     muteBtn.classList.toggle('btn-outline-secondary', !isMuted);
     muteBtn.classList.toggle('btn-outline-dark', isMuted);
     muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
-    muteBtn.setAttribute('aria-pressed', String(isMuted));
     saveToLocal('sfw_muted', isMuted ? '1' : '0');
     if (audioCtx.state === 'suspended') audioCtx.resume();
 };
@@ -583,7 +581,6 @@ if (loadFromLocal('sfw_muted') === '1') {
     state.muted = true;
     muteBtn.classList.replace('btn-outline-secondary', 'btn-outline-dark');
     muteBtn.textContent = 'Unmute';
-    muteBtn.setAttribute('aria-pressed', 'true');
 }
 
 // Init
