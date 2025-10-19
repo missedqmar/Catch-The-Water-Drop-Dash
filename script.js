@@ -30,7 +30,6 @@ const DIFFICULTY_SETTINGS = {
         missPenalty: 0,            // no progress loss on miss
         hitProgressPenalty: 0,     // hazards don’t reduce progress, just score
         hazardScorePenalty: 1,
-        comboBonusEvery: 4,
         comboBonusProgress: 2
     },
     normal: {
@@ -44,7 +43,6 @@ const DIFFICULTY_SETTINGS = {
         missPenalty: 1,            // 1% progress loss on miss
         hitProgressPenalty: 1,     // hazards reduce progress 1%
         hazardScorePenalty: 1,
-        comboBonusEvery: 5,
         comboBonusProgress: 2
     },
     hard: {
@@ -58,7 +56,6 @@ const DIFFICULTY_SETTINGS = {
         missPenalty: 2,            // steeper punishments
         hitProgressPenalty: 2,
         hazardScorePenalty: 2,
-        comboBonusEvery: 6,
         comboBonusProgress: 3
     }
 };
@@ -68,7 +65,6 @@ const $ = sel => document.querySelector(sel);
 const gameArea = $('#game-area');
 const overlay = $('#overlay');
 const milestone = $('#milestone');
-const confettiLayer = $('#confetti-layer');
 const badgesEl = $('#badges');
 const scoreEl = $('#score');
 const comboEl = $('#combo');
@@ -116,19 +112,20 @@ gameArea.addEventListener('pointerdown', (e) => { dragging = true; moveToPointer
 window.addEventListener('pointerup', () => dragging = false);
 gameArea.addEventListener('pointermove', (e) => { if (dragging) moveToPointer(e); });
 
-window.addEventListener('keydown', (e) => {
-    const isLeft = e.code === 'ArrowLeft' || e.key.toLowerCase() === 'a';
-    const isRight = e.code === 'ArrowRight' || e.key.toLowerCase() === 'd';
-    const isSpace = e.code === 'Space';
+function getKeyDirection(e) {
+    return {
+        isLeft: e.code === 'ArrowLeft' || e.key.toLowerCase() === 'a',
+        isRight: e.code === 'ArrowRight' || e.key.toLowerCase() === 'd'
+    };
+}
 
+window.addEventListener('keydown', (e) => {
+    const { isLeft, isRight } = getKeyDirection(e);
     if (isLeft) { keys.left = true; e.preventDefault(); }
     if (isRight) { keys.right = true; e.preventDefault(); }
-    if (isSpace) { e.preventDefault(); if (!pauseBtn.disabled) pauseBtn.click(); }
 });
 window.addEventListener('keyup', (e) => {
-    const isLeft = e.code === 'ArrowLeft' || e.key.toLowerCase() === 'a';
-    const isRight = e.code === 'ArrowRight' || e.key.toLowerCase() === 'd';
-
+    const { isLeft, isRight } = getKeyDirection(e);
     if (isLeft) keys.left = false;
     if (isRight) keys.right = false;
 });
@@ -179,13 +176,6 @@ const sfx = (() => {
     return { play };
 })();
 
-// Prime/resume audio on first user gesture (mobile/Chrome autoplay)
-function primeAudio() {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    window.removeEventListener('pointerdown', primeAudio);
-}
-window.addEventListener('pointerdown', primeAudio, { once: true });
-
 // ---- UI helpers ----
 function setOverlay(show, innerHTML) {
     overlay.style.display = show ? 'block' : 'none';
@@ -194,7 +184,51 @@ function setOverlay(show, innerHTML) {
         if (cardBody) cardBody.innerHTML = innerHTML;
     }
 }
+
+function createOverlayHTML(title, message, buttonHTML) {
+    return `
+    <h3 class="fw-bold">${title}</h3>
+    <p class="text-muted">${message}</p>
+    <div class="d-flex gap-2 justify-content-center">
+      ${buttonHTML}
+    </div>
+  `;
+}
+
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+// Helper: Get current difficulty settings
+const getSettings = () => DIFFICULTY_SETTINGS[state.difficulty];
+
+// Helper: Adjust progress with automatic clamping
+function adjustProgress(delta) {
+    const settings = getSettings();
+    state.progress = clamp(state.progress + delta, 0, settings.progressGoal);
+}
+
+// Helper: Remove item from game
+function removeItem(obj) {
+    obj.el.remove();
+    state.items.delete(obj);
+}
+
+// Helper: Update best combo if current combo is higher
+function updateBestCombo() {
+    if (state.combo > state.bestCombo) {
+        state.bestCombo = state.combo;
+        saveToLocal('sfw_best_combo', state.bestCombo);
+    }
+}
+
+// Helper: Get feedback label position for an object
+function getFeedbackPosition(obj) {
+    const rect = gameArea.getBoundingClientRect();
+    return {
+        x: rect.left + obj.x + obj.w / 2,
+        y: rect.top + player.y
+    };
+}
+
 function updateHUD() {
     scoreEl.textContent = state.score;
     comboEl.textContent = 'x' + state.combo;
@@ -237,7 +271,7 @@ function resetMilestones() {
 
 function checkMilestones() {
     const p = state.progress;
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
 
     if (p >= settings.progressGoal) { endGame(true); return; }
 
@@ -251,45 +285,9 @@ function checkMilestones() {
     });
 }
 
-// ---- Confetti ----
-function confettiBurst() {
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const colors = [getComputedStyle(document.documentElement).getPropertyValue('--cw-yellow').trim(), '#ffffff', '#e0e0e0'];
-    const count = 140;
-    const rect = confettiLayer.getBoundingClientRect();
-    for (let i = 0; i < count; i++) {
-        const piece = document.createElement('div');
-        const size = 6 + Math.random() * 6;
-        piece.style.position = 'absolute';
-        piece.style.width = size + 'px';
-        piece.style.height = (size * 0.6) + 'px';
-        piece.style.background = colors[Math.floor(Math.random() * colors.length)];
-        piece.style.left = Math.random() * rect.width + 'px';
-        piece.style.top = '-10px';
-        piece.style.opacity = '0.95';
-        piece.style.transform = `rotate(${Math.random() * 360}deg)`;
-        confettiLayer.appendChild(piece);
-        const fall = () => {
-            const start = performance.now();
-            const duration = 1800 + Math.random() * 800;
-            const drift = (Math.random() - 0.5) * 120;
-            const startX = parseFloat(piece.style.left);
-            function step(now) {
-                const t = Math.min(1, (now - start) / duration);
-                piece.style.top = (t * (rect.height + 40) - 10) + 'px';
-                piece.style.left = (startX + t * drift) + 'px';
-                piece.style.opacity = (1 - t).toString();
-                if (t < 1) requestAnimationFrame(step); else piece.remove();
-            }
-            requestAnimationFrame(step);
-        };
-        fall();
-    }
-}
-
 // ---- Win/Lose ----
 function saveBestPercent() {
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
     const pct = Math.min(Math.round(state.progress), settings.progressGoal);
     if (pct > state.bestPctByMode[state.difficulty]) {
         state.bestPctByMode[state.difficulty] = pct;
@@ -302,30 +300,25 @@ function endGame(won) {
     stopLoops();
     saveBestPercent();
 
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
     const diffLabel = settings.label;
 
     if (won) {
         sfx.play('win');
-        confettiBurst();
-        setOverlay(true, `
-        <h3 class="fw-bold">You filled a well! 🎉</h3>
-        <p class="text-muted">Great job on <strong>${diffLabel}</strong> mode! Final score: <strong>${state.score}</strong></p>
-        <div class="d-flex gap-2 justify-content-center">
-          <button class="btn btn-cw" id="playAgain">Play Again</button>
-          <a class="btn btn-outline-dark" href="https://www.charitywater.org/donate" target="_blank" rel="noopener">Donate</a>
-        </div>
-      `);
+        setOverlay(true, createOverlayHTML(
+            'You filled a well! 🎉',
+            `Great job on <strong>${diffLabel}</strong> mode! Final score: <strong>${state.score}</strong>`,
+            `<button class="btn btn-cw" id="playAgain">Play Again</button>
+          <a class="btn btn-outline-dark" href="https://www.charitywater.org/donate" target="_blank" rel="noopener">Donate</a>`
+        ));
     } else {
         sfx.play('hit');
-        setOverlay(true, `
-        <h3 class="fw-bold">Time's up!</h3>
-        <p class="text-muted">You made it to <strong>${Math.round(state.progress)}%</strong> with a score of <strong>${state.score}</strong> on <strong>${diffLabel}</strong> mode.</p>
-        <div class="d-flex gap-2 justify-content-center">
-          <button class="btn btn-cw" id="playAgain">Try Again</button>
-          <a class="btn btn-outline-dark" href="https://www.charitywater.org/" target="_blank" rel="noopener">Learn more</a>
-        </div>
-      `);
+        setOverlay(true, createOverlayHTML(
+            'Time\'s up!',
+            `You made it to <strong>${Math.round(state.progress)}%</strong> with a score of <strong>${state.score}</strong> on <strong>${diffLabel}</strong> mode.`,
+            `<button class="btn btn-cw" id="playAgain">Try Again</button>
+          <a class="btn btn-outline-dark" href="https://www.charitywater.org/" target="_blank" rel="noopener">Learn more</a>`
+        ));
     }
 
     $('#playAgain').onclick = () => { sfx.play('click'); resetGame(true); };
@@ -333,18 +326,19 @@ function endGame(won) {
 }
 
 // ---- Spawning ----
-function handleItemInteraction(obj, labelX, labelY) {
+function handleItemInteraction(obj) {
+    const pos = getFeedbackPosition(obj);
     if (!obj.isHazard) {
-        onCollect(labelX, labelY);
+        onCollect(pos.x, pos.y);
         obj.el.classList.add('collected');
-        setTimeout(() => { obj.el.remove(); state.items.delete(obj); }, 300);
+        setTimeout(() => removeItem(obj), 300);
     } else {
-        onHazard(labelX, labelY);
+        onHazard(pos.x, pos.y);
     }
 }
 
 function spawnItem() {
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
     const isHazard = Math.random() < settings.hazardChance;
 
     const el = document.createElement('div');
@@ -363,8 +357,7 @@ function spawnItem() {
     // Click-to-collect / hit
     el.addEventListener('click', (e) => {
         if (!state.running) return;
-        const rect = gameArea.getBoundingClientRect();
-        handleItemInteraction(obj, rect.left + obj.x + obj.w / 2, rect.top + player.y);
+        handleItemInteraction(obj);
     });
 
     gameArea.appendChild(el);
@@ -372,18 +365,17 @@ function spawnItem() {
 }
 
 function onCollect(labelX, labelY) {
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
     state.score += 1;
     state.combo += 1;
-    state.bestCombo = Math.max(state.bestCombo, state.combo);
-    saveToLocal('sfw_best_combo', state.bestCombo);
+    updateBestCombo();
 
     // Base progress
-    state.progress = clamp(state.progress + settings.progressPerCan, 0, settings.progressGoal);
+    adjustProgress(settings.progressPerCan);
 
     // Combo bonus every 5
     if (state.combo > 0 && state.combo % 5 === 0) {
-        state.progress = clamp(state.progress + settings.comboBonusProgress, 0, settings.progressGoal);
+        adjustProgress(settings.comboBonusProgress);
         feedbackLabel(labelX, labelY, `+${settings.comboBonusProgress}% Combo!`);
     } else {
         feedbackLabel(labelX, labelY, '+1');
@@ -395,13 +387,13 @@ function onCollect(labelX, labelY) {
 }
 
 function onHazard(labelX, labelY) {
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
 
     state.score = Math.max(0, state.score - settings.hazardScorePenalty);
     state.combo = 0;
 
     if (settings.hitProgressPenalty > 0) {
-        state.progress = clamp(state.progress - settings.hitProgressPenalty, 0, settings.progressGoal);
+        adjustProgress(-settings.hitProgressPenalty);
         feedbackLabel(labelX, labelY, `–${settings.hazardScorePenalty} & –${settings.hitProgressPenalty}%`, true);
     } else {
         feedbackLabel(labelX, labelY, `–${settings.hazardScorePenalty}`, true);
@@ -429,7 +421,7 @@ function frame(now) {
     const dt = frame.last ? (now - frame.last) / 1000 : 0;
     frame.last = now;
 
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
 
     // Player movement
     let dx = 0;
@@ -444,9 +436,8 @@ function frame(now) {
 
         // Collision
         if (intersects(obj)) {
-            const rect = gameArea.getBoundingClientRect();
-            handleItemInteraction(obj, rect.left + obj.x + obj.w / 2, rect.top + player.y);
-            state.items.delete(obj);
+            handleItemInteraction(obj);
+            removeItem(obj);
             continue;
         }
 
@@ -454,41 +445,34 @@ function frame(now) {
         if (obj.y > gameArea.clientHeight + 80) {
             if (!obj.isHazard) {
                 state.combo = 0;
-                const rect = gameArea.getBoundingClientRect();
-                feedbackLabel(rect.left + obj.x + obj.w / 2, rect.bottom - 24, 'miss', true);
+                const pos = getFeedbackPosition(obj);
+                feedbackLabel(pos.x, pos.y + 50, 'miss', true);
                 if (settings.missPenalty > 0) {
-                    state.progress = clamp(state.progress - settings.missPenalty, 0, settings.progressGoal);
+                    adjustProgress(-settings.missPenalty);
                 }
                 sfx.play('fail');
                 updateHUD();
             }
-            obj.el.remove();
-            state.items.delete(obj);
+            removeItem(obj);
         }
     }
 
     if (state.running) state.rafId = requestAnimationFrame(frame);
 }
 
-// Consistent spawn wrapper (so pause/resume stays clean)
-function spawnTick() {
-    if (state.running) spawnItem();
-}
-
 // ---- Loops ----
 function startLoops() {
     stopLoops();
     state.rafId = requestAnimationFrame(frame);
-    state.spawnId = setInterval(spawnTick, state.spawnInterval);
+    state.spawnId = setInterval(spawnItem, state.spawnInterval);
     state.tickId = setInterval(() => {
-        if (!state.running) return;
         state.timer -= 1;
 
         // Speed up spawns every 15s (floor to 450ms)
         if (state.timer % 15 === 0 && state.spawnInterval > 450) {
             state.spawnInterval -= 80;
             clearInterval(state.spawnId);
-            state.spawnId = setInterval(spawnTick, state.spawnInterval);
+            state.spawnId = setInterval(spawnItem, state.spawnInterval);
         }
 
         updateHUD();
@@ -497,17 +481,15 @@ function startLoops() {
 }
 
 function stopLoops() {
-    [state.rafId, state.spawnId, state.tickId].forEach((id, i) => {
-        if (id) {
-            i === 0 ? cancelAnimationFrame(id) : clearInterval(id);
-            [state.rafId, state.spawnId, state.tickId][i] = null;
-        }
-    });
+    if (state.rafId) cancelAnimationFrame(state.rafId);
+    if (state.spawnId) clearInterval(state.spawnId);
+    if (state.tickId) clearInterval(state.tickId);
+    state.rafId = state.spawnId = state.tickId = null;
 }
 
 // ---- Game lifecycle ----
 function explainDifficulty() {
-    const s = DIFFICULTY_SETTINGS[state.difficulty];
+    const s = getSettings();
     diffRules.innerHTML =
         `<span class="text-muted">
       Goal: <strong>${s.progressGoal}%</strong> • Time: <strong>${s.timer}s</strong> • Progress/Can: <strong>${s.progressPerCan}%</strong> •
@@ -524,7 +506,7 @@ function resetGame(autoStart = false) {
     // Read selected difficulty
     const selectedDiff = document.querySelector('input[name="difficulty"]:checked');
     state.difficulty = selectedDiff?.value || 'normal';
-    const settings = DIFFICULTY_SETTINGS[state.difficulty];
+    const settings = getSettings();
 
     Object.assign(state, {
         running: false,
@@ -536,22 +518,20 @@ function resetGame(autoStart = false) {
         hazardChance: settings.hazardChance
     });
 
-    layoutPlayer();
     updateHUD();
     resetMilestones();
     explainDifficulty();
 
-    Object.assign(pauseBtn, { textContent: 'Pause', disabled: true });
-    Object.assign(resetBtn, { disabled: true });
-    Object.assign(startBtn, { disabled: false });
+    pauseBtn.textContent = 'Pause';
+    pauseBtn.disabled = resetBtn.disabled = true;
+    startBtn.disabled = false;
 
     const diffLabel = settings.label;
-    setOverlay(!autoStart, `
-    <h3 class="fw-bold">Ready to help fill the well?</h3>
-    <p class="text-muted mb-2">Difficulty: <strong>${diffLabel}</strong> — Goal <strong>${settings.progressGoal}%</strong>, ${settings.timer}s, ${settings.progressPerCan}% per can</p>
-    <p class="text-muted mb-3">Catch cans, avoid hazards, and hit milestones to learn impact facts.</p>
-    <button class="btn btn-cw" id="playAgain">Start Game</button>
-  `);
+    setOverlay(!autoStart, createOverlayHTML(
+        'Ready to help fill the well?',
+        `Difficulty: <strong>${diffLabel}</strong> — Goal <strong>${settings.progressGoal}%</strong>, ${settings.timer}s, ${settings.progressPerCan}% per can<br>Catch cans, avoid hazards, and hit milestones to learn impact facts.`,
+        `<button class="btn btn-cw" id="playAgain">Start Game</button>`
+    ));
     $('#playAgain')?.addEventListener('click', () => { sfx.play('click'); startGame(); });
     if (autoStart) startGame();
 
@@ -562,9 +542,8 @@ function startGame() {
     if (state.running) return;
     state.running = true;
     setOverlay(false);
-    Object.assign(startBtn, { disabled: true });
-    Object.assign(pauseBtn, { disabled: false });
-    Object.assign(resetBtn, { disabled: false });
+    startBtn.disabled = true;
+    pauseBtn.disabled = resetBtn.disabled = false;
     layoutPlayer();
     startLoops();
 }
@@ -586,10 +565,8 @@ muteBtn.onclick = () => {
     const isMuted = state.muted;
     muteBtn.classList.toggle('btn-outline-secondary', !isMuted);
     muteBtn.classList.toggle('btn-outline-dark', isMuted);
-    Object.assign(muteBtn, {
-        textContent: isMuted ? 'Unmute' : 'Mute',
-        ariaPressed: String(isMuted)
-    });
+    muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
+    muteBtn.setAttribute('aria-pressed', String(isMuted));
     saveToLocal('sfw_muted', isMuted ? '1' : '0');
     if (audioCtx.state === 'suspended') audioCtx.resume();
 };
@@ -601,16 +578,12 @@ difficultyRadios.forEach(radio => {
     });
 });
 
-// Auto-pause when tab hidden
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden && state.running) pauseBtn.click();
-});
-
 // Restore mute preference
 if (loadFromLocal('sfw_muted') === '1') {
     state.muted = true;
     muteBtn.classList.replace('btn-outline-secondary', 'btn-outline-dark');
-    Object.assign(muteBtn, { textContent: 'Unmute', ariaPressed: 'true' });
+    muteBtn.textContent = 'Unmute';
+    muteBtn.setAttribute('aria-pressed', 'true');
 }
 
 // Init
